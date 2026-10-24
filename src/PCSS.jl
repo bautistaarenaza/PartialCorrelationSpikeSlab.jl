@@ -1,39 +1,46 @@
-module PCSS
+"""
+    PCSS
 
-# =====================================================================
-# Partial correlation spike-and-slab (PCSS) estimator of a sparse Gaussian
-# graphical model.
-#
-# The model has precision matrix Ω = Λ(I − R)Λ, with Λ the diagonal matrix of
-# scales and R the partial correlation matrix.  Each partial correlation has a
-# spike-and-slab prior: a Laplace spike of inverse width γ, truncated to (−1, 1),
-# and a uniform slab, mixed with weight η.  The PCSS estimate is the output of
-# the procedure of the paper: ECM fits of the log-posterior
-#     L(Λ, R, η) = L_s(Λ, R) − Σ_{i<j} pen(r_ij, η),
-#     L_s(Λ, R)  = −(n/2) tr[S_n Λ(I−R)Λ] + (n−1) log det Λ + (n/2) log det(I−R),
-#     pen(r, η)  = −log[η + (1−η) γ̃ e^{−γ|r|}],   γ̃ = γ/(1 − e^{−γ}),
-# along a continuation path in γ, followed by a comparison with the diagonal
-# estimate.
-#
-# Notation (as in the paper):
-#   λ  : diagonal of the scale matrix Λ, λ_i = √Ω_ii           (length-p vector)
-#   R  : partial correlation matrix, zero diagonal
-#   η  : mixture weight
-#   γ  : hyperparameter, the inverse width of the spike;  γ̃ = γ/(1 − e^{−γ})
-#   σ  : slab-membership probabilities computed in the E-step
-#   ρ  : sample correlation matrix ρ_n
-#   Σ̂  : Λ ρ Λ, the sample covariance on the scale set by Λ
-#   Θ  : I − R, the ADMM variable that carries the penalty and the unit diagonal
-#   Φ  : the ADMM copy of Θ that carries the smooth terms (positive definite)
-#   A  : ADMM dual variable;  β : ADMM parameter
-#
-# All computations are done on the correlation scale, that is, with S_n replaced
-# by ρ_n and Λ by the standardized scale D_s Λ, where D_s = diag(√(S_n)_ii).  By
-# scale invariance this changes neither R nor η, and the scales are returned to
-# the data scale at the end.
-#
-# Dependencies: LinearAlgebra, Statistics, Random, StatsFuns, FastLapackInterface.
-# =====================================================================
+Partial correlation spike-and-slab (PCSS) estimator of a sparse Gaussian
+graphical model.
+
+The model has precision matrix `Ω = Λ(I − R)Λ`, with `Λ` the diagonal matrix of
+scales and `R` the partial correlation matrix.  Each partial correlation has a
+spike-and-slab prior: a Laplace spike of inverse width `γ`, truncated to
+`(−1, 1)`, and a uniform slab, mixed with weight `η`.  The PCSS estimate is the
+output of the procedure of the paper: ECM fits of the log-posterior
+
+    L(Λ, R, η) = L_s(Λ, R) − Σ_{i<j} pen(r_ij, η),
+    L_s(Λ, R)  = −(n/2) tr[S_n Λ(I−R)Λ] + (n−1) log det Λ + (n/2) log det(I−R),
+    pen(r, η)  = −log[η + (1−η) γ̃ e^{−γ|r|}],   γ̃ = γ/(1 − e^{−γ}),
+
+along a continuation path in `γ`, followed by a comparison with the diagonal
+estimate.
+
+The exported functions are `pcss_fit`, which computes the estimate, and `γ_q`
+(ASCII alias `gamma_q`), which computes the calibrated hyperparameter.
+
+# Notation (as in the paper)
+
+    λ  : diagonal of the scale matrix Λ, λ_i = √Ω_ii           (length-p vector)
+    R  : partial correlation matrix, zero diagonal
+    η  : mixture weight
+    γ  : hyperparameter, the inverse width of the spike;  γ̃ = γ/(1 − e^{−γ})
+    σ  : slab-membership probabilities computed in the E-step
+    ρ  : sample correlation matrix ρ_n
+    Σ̂  : Λ ρ Λ, the sample covariance on the scale set by Λ
+    Θ  : I − R, the ADMM variable that carries the penalty and the unit diagonal
+    Φ  : the ADMM copy of Θ that carries the smooth terms (positive definite)
+    A  : ADMM dual variable;  β : ADMM parameter
+
+# Correlation scale
+
+All computations are done on the correlation scale, that is, with `S_n`
+replaced by `ρ_n` and `Λ` by the standardized scale `D_s Λ`, where
+`D_s = diag(√(S_n)_ii)`.  By scale invariance this changes neither `R` nor `η`,
+and the scales are returned to the data scale at the end.
+"""
+module PCSS
 
 using LinearAlgebra
 using LinearAlgebra.LAPACK: syevr!
@@ -42,13 +49,17 @@ using Random: AbstractRNG, default_rng, randexp
 using StatsFuns: tdistinvcdf
 using FastLapackInterface: HermitianEigenWs
 
-export pcss_fit, γ_q
+export pcss_fit, γ_q, gamma_q
 
-# ---------------------------------------------------------------------
-# E-step: slab-membership probabilities
-#     σ_ij = η / (η + (1−η) γ̃ e^{−γ|r_ij|}) = 1 / (1 + (1−η)/η · γ̃ e^{−γ|r_ij|}),
-# written into σ in place, with the diagonal set to 1.  Requires η > 0.
-# ---------------------------------------------------------------------
+"""
+    slab_membership!(σ, R, η, γ)
+
+E-step: the slab-membership probabilities
+
+    σ_ij = η / (η + (1−η) γ̃ e^{−γ|r_ij|}) = 1 / (1 + (1−η)/η · γ̃ e^{−γ|r_ij|}),
+
+written into `σ` in place, with the diagonal set to 1.  Requires `η > 0`.
+"""
 function slab_membership!(σ::Matrix{Float64}, R::AbstractMatrix{Float64},
   η::Float64, γ::Float64)
   γ̃ = γ / (1 - exp(-γ))
@@ -60,12 +71,17 @@ function slab_membership!(σ::Matrix{Float64}, R::AbstractMatrix{Float64},
   return σ
 end
 
-# ---------------------------------------------------------------------
-# The two terms of the smooth part L_s that depend on R, on the correlation
-# scale:  log det(I − R)  and  λ'(ρ∘(I−R))λ = tr[ρ Λ(I−R)Λ].
-# The log-determinant comes from a Cholesky factorization of I − R, and is −Inf
-# when I − R is not positive definite.
-# ---------------------------------------------------------------------
+"""
+    logdet_and_quad(λ, R, ρ)
+
+The two terms of the smooth part `L_s` that depend on `R`, on the correlation
+scale,
+
+    log det(I − R)   and   λ'(ρ∘(I−R))λ = tr[ρ Λ(I−R)Λ].
+
+The log-determinant comes from a Cholesky factorization of `I − R`, and is
+`-Inf` when `I − R` is not positive definite.  Returns `(logdet, quad)`.
+"""
 function logdet_and_quad(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   ρ::AbstractMatrix{Float64})
   p = length(λ)
@@ -83,13 +99,17 @@ function logdet_and_quad(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   return ld, quad
 end
 
-# ---------------------------------------------------------------------
-# Log-posterior L of the paper, divided by n and up to an additive constant, on
-# the correlation scale,
-#     (1 − 1/n) Σ_i log λ_i + ½[log det(I−R) − λ'(ρ∘(I−R))λ] − (1/n) Σ_{i<j} pen(r_ij, η).
-# It is −Inf when I − R is not positive definite.  Used in the stopping rule of
-# the ECM algorithm and in the comparison with the diagonal estimate.
-# ---------------------------------------------------------------------
+"""
+    log_posterior(λ, R, η, n, ρ, γ)
+
+Log-posterior `L` of the paper, divided by `n` and up to an additive constant,
+on the correlation scale,
+
+    (1 − 1/n) Σ_i log λ_i + ½[log det(I−R) − λ'(ρ∘(I−R))λ] − (1/n) Σ_{i<j} pen(r_ij, η).
+
+It is `-Inf` when `I − R` is not positive definite.  Used in the stopping rule
+of the ECM algorithm and in the comparison with the diagonal estimate.
+"""
 function log_posterior(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   η::Float64, n::Int, ρ::AbstractMatrix{Float64}, γ::Float64)
   p = size(ρ, 1)
@@ -103,12 +123,14 @@ function log_posterior(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   return smooth + minus_pen / n
 end
 
-# ---------------------------------------------------------------------
-# ADMM workspace.  Θ, A and β are carried across ECM iterations and across the
-# stages of the continuation path, so that every R-update is warm-started.  The
-# buffers and the LAPACK eigendecomposition workspace are reused to avoid
-# allocation.
-# ---------------------------------------------------------------------
+"""
+    ADMMWorkspace(Θ0)
+
+ADMM workspace of the R-update, started at `Θ = Θ0`.  `Θ`, `A` and `β` are
+carried across ECM iterations and across the stages of the continuation path,
+so that every R-update is warm-started.  The buffers and the LAPACK
+eigendecomposition workspace are reused to avoid allocation.
+"""
 mutable struct ADMMWorkspace{E}
   Θ::Matrix{Float64}      # I − R, carries the penalty and the unit diagonal
   A::Matrix{Float64}      # dual variable
@@ -127,17 +149,22 @@ function ADMMWorkspace(Θ0::AbstractMatrix{Float64})
   ADMMWorkspace(Θ, zeros(p, p), 1.0, G, similar(Θ), similar(Θ), eigws)
 end
 
-# ---------------------------------------------------------------------
-# R-update of the M-step: the diagonal-constrained, entrywise-weighted graphical
-# lasso of the paper, divided by 2,
-#     min_{Θ : Θ_ii = 1, Θ ≻ 0}  (n/2)[tr(Σ̂Θ) − log det Θ] + Σ_{i≠j} wts_ij |Θ_ij|,
-# with weights wts_ij = γ(1 − σ_ij)/2, solved by ADMM with the copy Φ of Θ, the
-# dual variable A and the parameter β, warm-started through `ws`.  Since the
-# objective is divided by 2, n/2 replaces n in the ADMM updates of the paper.
-# On return, R = I − Θ, after Θ is shifted so that its smallest eigenvalue equals
-# that of Φ, which is positive, and rescaled to unit diagonal.  Only the upper
-# triangle of Σ̂ is read.  Returns the number of ADMM iterations.
-# ---------------------------------------------------------------------
+"""
+    update_R!(R, n, Σ̂, wts, ws, tol; admm_max_iter = 2^8)
+
+R-update of the M-step: the diagonal-constrained, entrywise-weighted graphical
+lasso of the paper, divided by 2,
+
+    min_{Θ : Θ_ii = 1, Θ ≻ 0}  (n/2)[tr(Σ̂Θ) − log det Θ] + Σ_{i≠j} wts_ij |Θ_ij|,
+
+with weights `wts_ij = γ(1 − σ_ij)/2`, solved by ADMM with the copy `Φ` of `Θ`,
+the dual variable `A` and the parameter `β`, warm-started through `ws`.  Since
+the objective is divided by 2, `n/2` replaces `n` in the ADMM updates of the
+paper.  On return, `R = I − Θ`, after `Θ` is shifted so that its smallest
+eigenvalue equals that of `Φ`, which is positive, and rescaled to unit
+diagonal.  Only the upper triangle of `Σ̂` is read.  Returns the number of ADMM
+iterations.
+"""
 function update_R!(R::Matrix{Float64}, n::Int,
   Σ̂::Matrix{Float64}, wts::Matrix{Float64},
   ws::ADMMWorkspace, tol::Float64; admm_max_iter::Int=2^8)
@@ -218,14 +245,18 @@ function update_R!(R::Matrix{Float64}, n::Int,
   return s
 end
 
-# ---------------------------------------------------------------------
-# Λ-update of the M-step: coordinate descent on the subproblem of the paper, on
-# the correlation scale ((S_n)_ii = 1),
-#     λ_i ← [√(b_i² + 4(1 − 1/n)) − b_i] / 2,   b_i = −Σ_{j≠i} ρ_ij r_ij λ_j,
-# each coordinate using the most recent values of the others.  The sweeps stop
-# when the relative change of log λ falls below tol.  ρR = ρ ∘ R must be
-# symmetric, since b_i is accumulated down column i.
-# ---------------------------------------------------------------------
+"""
+    update_λ!(λ, n, ρR; tol = 2.0^-10, max_iter = 2^10)
+
+Λ-update of the M-step: coordinate descent on the subproblem of the paper, on
+the correlation scale (`(S_n)_ii = 1`),
+
+    λ_i ← [√(b_i² + 4(1 − 1/n)) − b_i] / 2,   b_i = −Σ_{j≠i} ρ_ij r_ij λ_j,
+
+each coordinate using the most recent values of the others.  The sweeps stop
+when the relative change of `log λ` falls below `tol`.  `ρR = ρ ∘ R` must be
+symmetric, since `b_i` is accumulated down column `i`.
+"""
 function update_λ!(λ::Vector{Float64}, n::Int, ρR::AbstractMatrix{Float64};
   tol::Float64=2.0^-10, max_iter::Int=2^10)
   c = 1.0 - 1 / n
@@ -252,7 +283,11 @@ function update_λ!(λ::Vector{Float64}, n::Int, ρR::AbstractMatrix{Float64};
   return λ
 end
 
-# ---- reductions over the strict upper triangle, used by the stopping rule ----
+"""
+    sum_upper(B)
+
+Sum of the entries of `B` above the diagonal.  Used in the η-update.
+"""
 @inline function sum_upper(B::AbstractMatrix{Float64})
   s = 0.0
   @inbounds for j in 2:size(B, 1), i in 1:j-1
@@ -261,7 +296,12 @@ end
   return s
 end
 
-# number of pairs that enter or leave the support of R
+"""
+    support_change(R, old)
+
+Number of pairs that enter or leave the support of `R` relative to `old`.  Used
+in the stopping rule of the ECM algorithm.
+"""
 @inline function support_change(R::AbstractMatrix{Float64}, old::AbstractMatrix{Float64})
   c = 0
   @inbounds for j in 2:size(R, 1), i in 1:j-1
@@ -270,6 +310,12 @@ end
   return c
 end
 
+"""
+    rel_log_change(λ, old)
+
+Relative change of the scales on the log scale, `‖log λ − log old‖ / ‖log λ‖`.
+Used in the stopping rule of the ECM algorithm.
+"""
 @inline function rel_log_change(λ::Vector{Float64}, old::Vector{Float64})
   num = 0.0
   den = 0.0
@@ -281,16 +327,19 @@ end
   return sqrt(num) / sqrt(max(den, eps()))
 end
 
-# ---------------------------------------------------------------------
-# ECM algorithm at fixed γ.  Each iteration consists of the E-step and the η-,
-# R- and Λ-updates of the M-step, in that order.  The iterations stop when the
-# estimate and the log-posterior change by less than solution_tol (relative
-# change of log λ, number of pairs entering or leaving the support of R, change
-# of η and, if monitor_obj, relative change of the log-posterior), or after
-# max_iter iterations.  The ADMM workspace `ws` is supplied by the caller, so
-# that it is warm-started across the stages of the continuation path.  ρ must
-# be a symmetric Matrix.  Returns (λ, R, η).
-# ---------------------------------------------------------------------
+"""
+    ecm(λ0, R0, η0, n, ρ, γ; ws = ADMMWorkspace(I - R0), solution_tol = 2.0^-12,
+        R_update_tol = 2.0^-7, max_iter = ceil(Int, 2^4 * sqrt(p)), monitor_obj = true)
+
+ECM algorithm at fixed `γ`.  Each iteration consists of the E-step and the η-,
+R- and Λ-updates of the M-step, in that order.  The iterations stop when the
+estimate and the log-posterior change by less than `solution_tol` (relative
+change of `log λ`, number of pairs entering or leaving the support of `R`,
+change of `η` and, if `monitor_obj`, relative change of the log-posterior), or
+after `max_iter` iterations.  The ADMM workspace `ws` is supplied by the caller,
+so that it is warm-started across the stages of the continuation path.  `ρ` must
+be a symmetric `Matrix`.  Returns `(λ, R, η)`.
+"""
 function ecm(λ0::Vector{Float64}, R0::Matrix{Float64}, η0::Float64,
   n::Int, ρ::AbstractMatrix{Float64}, γ::Float64;
   ws::ADMMWorkspace=ADMMWorkspace(I - R0),
@@ -349,49 +398,18 @@ function ecm(λ0::Vector{Float64}, R0::Matrix{Float64}, η0::Float64,
   return λ, R, η
 end
 
-# ---------------------------------------------------------------------
-# Calibrated hyperparameter γ_q(m̄, d̄): the (1 − q)-quantile, under a diagonal
-# ground truth, of the limit law of the lower bound
-#     γ̲(m̄, d̄) = max{γ_R(m̄, d̄), γ_η(m̄)}
-# of the forest theorem, which compares the diagonal model with the estimates
-# supported on forests with at most m̄ edges and maximum degree at most d̄.
-#
-# By the joint order-statistics lemma, {ℓ F̄_n(|ρ_n|_(k))}_{k ≤ m̄} converges in
-# distribution to (Γ_k)_{k ≤ m̄}, with Γ_k = E_1 + … + E_k, the E_i independent
-# standard exponential, and ℓ = p(p−1)/2.  Substituting
-# |ρ_n|_(k) = F̄_n^{-1}(Γ_k/ℓ) =: ϱ_k and w_(k) = 1/(1 − ϱ_k²) in γ̲(m̄, d̄) gives
-#     γ_R(m̄, d̄) = (n−1) max_c ϱ_{k₀} √(ω_1(c) ω_2(c)),
-#     ω_1(c)     = (1 + Σ_{k∈K^b_1} (w_(k) − 1)) · ν[(1+τ_1)/2 (log w_(k₀) + Σ_{k∈K^s_1} log w_(k))],
-#     γ_η(m̄)    = 1 + (1/ℓ) Σ_{k=1}^{m̄} w_(k)^{(n−1)/2},
-# with ν(x) = x/(1 − e^{−x}), ω_2(c) defined by exchanging the endpoints 1 and 2
-# of the central edge, and the maximum running over the configurations
-# c = (k₀, K^b_1, K^s_1, τ_1, K^b_2, K^s_2, τ_2) of the paper.  Every rank is at
-# most |c| ≤ m̄, so m̄ draws Γ_1, …, Γ_m̄ per replicate suffice.  γ_q(m̄, d̄)
-# depends on the data only through n and p.
-#
-# F̄_n is inverted through the Student form of Theorem 5.1.3 of Muirhead (1982),
-#     F̄_n^{-1}(v) = z_v / √(n − 2 + z_v²),   z_v = (1 − v/2)-quantile of t_{n−2},
-# so 1 − ϱ_k² = (n−2)/(n−2 + z_v²) is evaluated directly, without cancellation
-# when ϱ_k ≈ 1, which is where γ_η is largest.  As in the paper, ϱ_k := 0 when
-# Γ_k > ℓ, where F̄_n^{-1} is undefined, so that w_(k) = 1.
-#
-# Two reductions keep the maximum exact and cheap.
-#  * Only maximal configurations are enumerated, since the maximum is attained
-#    at one (lemma on maximal configurations).  The configurations are generated
-#    by their shape, the numbers of edges of each type at each endpoint and the
-#    two indicators, and then by the assignment of the ranks 1, …, |c|.  A
-#    configuration is maximal exactly when its shape admits no further edge (with
-#    the new rank |c| + 1) and no further indicator.
-#  * Exchanging the endpoints 1 and 2 leaves ϱ_{k₀} √(ω_1 ω_2) unchanged, so only
-#    one configuration of each mirrored pair is kept.
-# A configuration is stored as (k₀, τ_1, K^b_1, K^s_1, τ_2, K^b_2, K^s_2), with
-# sets of ranks as bitmasks (bit k−1 ↔ rank k).  Per replicate, Σ(w − 1) and
-# Σ log w are tabulated over all 2^m̄ bitmasks, ν is evaluated once per distinct
-# (τ, k₀, K^s), and each configuration costs four lookups and five
-# multiplications.  The table depends only on (m̄, d̄) and is memoized.  Its size
-# grows quickly with m̄ (at d̄ = m̄: 791 configurations for m̄ = 5, 3983 for
-# m̄ = 6, 19297 for m̄ = 7).
-# ---------------------------------------------------------------------
+"""
+    _ForestTable
+
+Maximal configurations of the forest theorem for given `(m̄, d̄)`, used by
+`γ_q`.  A configuration `(k₀, τ_1, K^b_1, K^s_1, τ_2, K^b_2, K^s_2)` is stored
+with its sets of ranks as bitmasks (bit `k−1` ↔ rank `k`).  The factor `ν` of
+each endpoint depends on the configuration only through `(τ, k₀, K^s)`, so each
+distinct key is stored once, and the configurations point to it through `ι1`
+and `ι2`.  The table depends only on `(m̄, d̄)` and is memoized.  Its size grows
+quickly with `m̄` (at `d̄ = m̄`: 791 configurations for `m̄ = 5`, 3983 for
+`m̄ = 6`, 19297 for `m̄ = 7`).
+"""
 struct _ForestTable
   k₀::Vector{Int}     # per configuration: rank of the central edge
   Kb1::Vector{Int}    # per configuration: bitmask of K^b_1
@@ -406,9 +424,18 @@ end
 const _FOREST_TABLES = Dict{Tuple{Int,Int},_ForestTable}()   # memoized per (m̄, d̄)
 const _FOREST_TABLES_LOCK = ReentrantLock()
 
-_νf(x::Float64) = x > 0 ? x / -expm1(-x) : 1.0    # ν(x) = x/(1 − e^{−x}), ν(0) = 1
+"""
+    _νf(x)
 
-# Subsets of `mask` with exactly k elements.
+`ν(x) = x/(1 − e^{−x})`, with `ν(0) = 1`.
+"""
+_νf(x::Float64) = x > 0 ? x / -expm1(-x) : 1.0
+
+"""
+    _submasks(mask, k)
+
+Subsets of `mask` with exactly `k` elements, as bitmasks.
+"""
 function _submasks(mask::Int, k::Int)
   out = Int[]
   s = mask
@@ -420,6 +447,14 @@ function _submasks(mask::Int, k::Int)
   return out
 end
 
+"""
+    _forest_table(m̄, d̄)
+
+Enumeration of the maximal configurations for `(m̄, d̄)`, keeping one of each
+mirrored pair, as a `_ForestTable`.  The configurations are generated by their
+shape and then by the assignment of the ranks `1, …, |c|` (see the extended
+help of `γ_q`).
+"""
 function _forest_table(m̄::Int, d̄::Int)
   # Shape c = (db1, ds1, τ1, db2, ds2, τ2): numbers of edges of type b and s at
   # endpoints 1 and 2 (ds1 and ds2 count the central edge) and the indicators,
@@ -458,6 +493,11 @@ function _forest_table(m̄::Int, d̄::Int)
   return _ForestTable(k₀, Kb1, Kb2, ι1, ι2, τν, k₀ν, Ksν)
 end
 
+"""
+    _forest_table_cached(m̄, d̄)
+
+`_forest_table(m̄, d̄)`, memoized and thread-safe.
+"""
 function _forest_table_cached(m̄::Int, d̄::Int)
   lock(_FOREST_TABLES_LOCK) do
     get!(() -> _forest_table(m̄, d̄), _FOREST_TABLES, (m̄, d̄))
@@ -465,20 +505,88 @@ function _forest_table_cached(m̄::Int, d̄::Int)
 end
 
 """
-    γ_q(n, p; q = 0.05, m̄ = 5, d̄ = 2, nreps = 20_000, rng = default_rng())
+    _kw(uname, u, aname, a, default)
 
-Calibrated hyperparameter `γ_q(m̄, d̄)` for sample size `n` and `p` variables: the
-`(1 − q)`-quantile, under a diagonal ground truth, of the limit law of the lower
-bound of the forest theorem, computed by Monte Carlo with `nreps` replicates.
+Value of a keyword given either under its Unicode name `uname` (value `u`) or
+under its ASCII synonym `aname` (value `a`), or `default` when neither is given.
+Throws an `ArgumentError` when both are given.
 """
-function γ_q(n::Int, p::Int; q::Float64=0.05, m̄::Int=5, d̄::Int=2, nreps::Int=20_000,
-  rng::AbstractRNG=default_rng())
+function _kw(uname::Symbol, u, aname::Symbol, a, default)
+  u === nothing && return a === nothing ? default : a
+  a === nothing || throw(ArgumentError("give the keyword $uname or its ASCII synonym $aname, not both"))
+  return u
+end
+
+"""
+    γ_q(n, p; q = 0.05, m_max = 5, d_max = 2, nreps = 20_000, rng = default_rng())
+    gamma_q(n, p; ...)
+
+Calibrated hyperparameter `γ_q(m̄, d̄)`, with `m̄ = m_max` and `d̄ = d_max`, for
+sample size `n` and `p` variables: the `(1 − q)`-quantile, under a diagonal
+ground truth, of the limit law of the lower bound of the forest theorem,
+computed by Monte Carlo with `nreps` replicates.  `gamma_q` is an ASCII alias,
+and `m_max` and `d_max` can also be given under their Unicode names `m̄` and
+`d̄`.
+
+# Extended help
+
+The forest theorem compares the diagonal model with the estimates supported on
+forests with at most `m̄` edges and maximum degree at most `d̄`, through the
+lower bound
+
+    γ̲(m̄, d̄) = max{γ_R(m̄, d̄), γ_η(m̄)}.
+
+By the joint order-statistics lemma, `{ℓ F̄_n(|ρ_n|_(k))}_{k ≤ m̄}` converges in
+distribution to `(Γ_k)_{k ≤ m̄}`, with `Γ_k = E_1 + … + E_k`, the `E_i`
+independent standard exponential, and `ℓ = p(p−1)/2`.  Substituting
+`|ρ_n|_(k) = F̄_n^{-1}(Γ_k/ℓ) =: ϱ_k` and `w_(k) = 1/(1 − ϱ_k²)` in `γ̲(m̄, d̄)`
+gives
+
+    γ_R(m̄, d̄) = (n−1) max_c ϱ_{k₀} √(ω_1(c) ω_2(c)),
+    ω_1(c)     = (1 + Σ_{k∈K^b_1} (w_(k) − 1)) · ν[(1+τ_1)/2 (log w_(k₀) + Σ_{k∈K^s_1} log w_(k))],
+    γ_η(m̄)    = 1 + (1/ℓ) Σ_{k=1}^{m̄} w_(k)^{(n−1)/2},
+
+with `ν(x) = x/(1 − e^{−x})`, `ω_2(c)` defined by exchanging the endpoints 1
+and 2 of the central edge, and the maximum running over the configurations
+`c = (k₀, K^b_1, K^s_1, τ_1, K^b_2, K^s_2, τ_2)` of the paper.  Every rank is
+at most `|c| ≤ m̄`, so `m̄` draws `Γ_1, …, Γ_m̄` per replicate suffice.
+`γ_q(m̄, d̄)` depends on the data only through `n` and `p`.
+
+`F̄_n` is inverted through the Student form of Theorem 5.1.3 of Muirhead (1982),
+
+    F̄_n^{-1}(v) = z_v / √(n − 2 + z_v²),   z_v = (1 − v/2)-quantile of t_{n−2},
+
+so `1 − ϱ_k² = (n−2)/(n−2 + z_v²)` is evaluated directly, without cancellation
+when `ϱ_k ≈ 1`, which is where `γ_η` is largest.  As in the paper, `ϱ_k := 0`
+when `Γ_k > ℓ`, where `F̄_n^{-1}` is undefined, so that `w_(k) = 1`.
+
+Two reductions keep the maximum exact and cheap.
+
+  * Only maximal configurations are enumerated, since the maximum is attained
+    at one (lemma on maximal configurations).  The configurations are generated
+    by their shape, the numbers of edges of each type at each endpoint and the
+    two indicators, and then by the assignment of the ranks `1, …, |c|`.  A
+    configuration is maximal exactly when its shape admits no further edge
+    (with the new rank `|c| + 1`) and no further indicator.
+  * Exchanging the endpoints 1 and 2 leaves `ϱ_{k₀} √(ω_1 ω_2)` unchanged, so
+    only one configuration of each mirrored pair is kept.
+
+Per replicate, `Σ(w − 1)` and `Σ log w` are tabulated over all `2^m̄` bitmasks,
+`ν` is evaluated once per distinct `(τ, k₀, K^s)`, and each configuration costs
+four lookups and five multiplications.
+"""
+function γ_q(n::Int, p::Int; q::Float64=0.05, m̄=nothing, m_max=nothing,
+  d̄=nothing, d_max=nothing, nreps::Int=20_000, rng::AbstractRNG=default_rng())
+
+  # ASCII synonyms of the Unicode keywords
+  m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
+  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 2))
 
   n ≥ 3 || throw(ArgumentError("γ_q needs n ≥ 3 (F̄_n has n − 2 degrees of freedom); got n = $n"))
   p ≥ 2 || throw(ArgumentError("γ_q needs p ≥ 2; got p = $p"))
   0 < q < 1 || throw(ArgumentError("γ_q needs q ∈ (0, 1); got q = $q"))
-  1 ≤ m̄ ≤ p - 1 || throw(ArgumentError("γ_q needs 1 ≤ m̄ ≤ p − 1; got m̄ = $m̄"))
-  1 ≤ d̄ ≤ m̄ || throw(ArgumentError("γ_q needs 1 ≤ d̄ ≤ m̄; got d̄ = $d̄"))
+  1 ≤ m̄ ≤ p - 1 || throw(ArgumentError("γ_q needs 1 ≤ m_max ≤ p − 1; got m_max = $m̄"))
+  1 ≤ d̄ ≤ m̄ || throw(ArgumentError("γ_q needs 1 ≤ d_max ≤ m_max; got d_max = $d̄"))
 
   tab = _forest_table_cached(m̄, d̄)
   nkeys = length(tab.τν)
@@ -546,48 +654,71 @@ function γ_q(n::Int, p::Int; q::Float64=0.05, m̄::Int=5, d̄::Int=2, nreps::In
   return quantile!(g, 1 - q)                  # quantile! sorts g in place
 end
 
-# ---------------------------------------------------------------------
-# Usage message printed when pcss_fit is called without a usable input.
-# ---------------------------------------------------------------------
+const gamma_q = γ_q          # ASCII alias
+
+"""
+    _pcss_fit_usage()
+
+Throws the `ArgumentError` of `pcss_fit` called without a usable input, with a
+usage message.
+"""
 function _pcss_fit_usage()
-  println("""
+  throw(ArgumentError("""
     pcss_fit expects either a data matrix or a (sample size, covariance) pair,
     passed as keyword arguments:
         pcss_fit(X = data)                     # X is the n × p data matrix
         pcss_fit(n = size(X, 1), S = cov(X))   # S is the p × p sample covariance
-    Optional keywords: γ, criterion, q, m̄, d̄, nreps, rng, γ_ebic, n_path, γ0, Ω0,
-    diag_cmp, γ_grid, K, span.
-    If both X and (n, S) are given, X takes precedence.""")
-  return nothing
+    Optional keywords: gamma, criterion, q, m_max, d_max, nreps, rng, gamma_ebic,
+    n_path, gamma0, Omega0, diag_cmp, gamma_grid, K, span (the Unicode names
+    γ, m̄, d̄, γ_ebic, γ0, Ω0, γ_grid are also accepted).
+    If both X and (n, S) are given, X takes precedence."""))
 end
 
 """
-    pcss_fit(; X, γ = nothing, criterion = :γ_q, q = 0.05, m̄ = 5, d̄ = 2, ...)
+    pcss_fit(; X, gamma = nothing, criterion = :gamma_q, q = 0.05, m_max = 5, d_max = 2, ...)
     pcss_fit(; n, S, ...)
 
 PCSS estimate of the scales `lambda` (the diagonal of Λ), the partial correlation
 matrix `R` and the mixture weight `eta`, from the `n × p` data matrix `X` or from
 the sample size `n` and the `p × p` sample covariance `S`.  Returns
-`(lambda, R, eta, gamma)`, or `nothing` on a usage error.
+`(lambda, R, eta, gamma)`, and throws an `ArgumentError` on a usage error.
 
-The hyperparameter γ is `γ` when given.  Otherwise it is set by `criterion`:
-  * `:γ_q` (default): the calibrated value `γ_q(n, p; q, m̄, d̄, nreps, rng)`;
-  * `:ebic`: the minimizer of the EBIC, with parameter `γ_ebic`, over a grid;
+The hyperparameter γ is `gamma` when given.  Otherwise it is set by `criterion`:
+  * `:gamma_q` (default, also accepted as `:γ_q`): the calibrated value
+    `gamma_q(n, p; q, m_max, d_max, nreps, rng)`;
+  * `:ebic`: the minimizer of the EBIC, with parameter `gamma_ebic` (0.5 by
+    default), over a grid;
   * `:bic`: the minimizer of the BIC over the same grid.
-The grid is `γ_grid` when given, and otherwise has `K` values, log-spaced from
-`γ_q/span` to `γ_q * span`.
+The grid is `gamma_grid` when given, and otherwise has `K` values, log-spaced
+from `γ_q/span` to `γ_q * span`.
 
 The estimate is the output of the procedure of the paper: ECM fits along a
-continuation path of `n_path` values of γ, log-spaced from `γ0` (√n by default)
-to the target γ, followed, if `diag_cmp`, by a comparison with the diagonal
-estimate.  If `γ0` exceeds the target, or `n_path == 1`, the path is replaced by
-a single fit at the target.  `Ω0` replaces the diagonal estimate as the start of
-the path, on the correlation scale.
+continuation path of `n_path` values of γ, log-spaced from `gamma0` (√n by
+default) to the target γ, followed, if `diag_cmp`, by a comparison with the
+diagonal estimate.  If `gamma0` exceeds the target, or `n_path == 1`, the path
+is replaced by a single fit at the target.  `Omega0` replaces the diagonal
+estimate as the start of the path, on the correlation scale.
+
+The keywords `gamma`, `m_max`, `d_max`, `gamma_ebic`, `gamma0`, `Omega0` and
+`gamma_grid` can also be given under their Unicode names `γ`, `m̄`, `d̄`,
+`γ_ebic`, `γ0`, `Ω0` and `γ_grid`.  Giving both names of one keyword throws an
+`ArgumentError`.
 """
-function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, criterion::Symbol=:γ_q,
-  q::Float64=0.05, m̄::Int=5, d̄::Int=2, nreps::Int=20_000, rng::AbstractRNG=default_rng(),
-  γ_ebic::Float64=0.5, n_path::Int=4, γ0=nothing, Ω0=nothing, diag_cmp::Bool=true,
-  γ_grid=nothing, K::Int=25, span::Float64=8.0)
+function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
+  criterion::Symbol=:gamma_q, q::Float64=0.05, m̄=nothing, m_max=nothing,
+  d̄=nothing, d_max=nothing, nreps::Int=20_000, rng::AbstractRNG=default_rng(),
+  γ_ebic=nothing, gamma_ebic=nothing, n_path::Int=4, γ0=nothing, gamma0=nothing,
+  Ω0=nothing, Omega0=nothing, diag_cmp::Bool=true, γ_grid=nothing, gamma_grid=nothing,
+  K::Int=25, span::Float64=8.0)
+
+  # ASCII synonyms of the Unicode keywords
+  γ = _kw(:γ, γ, :gamma, gamma, nothing)
+  m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
+  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 2))
+  γ_ebic = Float64(_kw(:γ_ebic, γ_ebic, :gamma_ebic, gamma_ebic, 0.5))
+  γ0 = _kw(:γ0, γ0, :gamma0, gamma0, nothing)
+  Ω0 = _kw(:Ω0, Ω0, :Omega0, Omega0, nothing)
+  γ_grid = _kw(:γ_grid, γ_grid, :gamma_grid, gamma_grid, nothing)
 
   # n, p, the sample correlation matrix ρ and the sample standard deviations sd,
   # from X, or from (n, S); X takes precedence.  ρ is stored as a plain symmetric
@@ -606,14 +737,15 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, criterion::Symb
     end
     ρ = Matrix(Symmetric(C))
   else
-    return _pcss_fit_usage()
+    _pcss_fit_usage()
   end
 
-  criterion in (:γ_q, :bic, :ebic) ||
-    error("pcss_fit: criterion must be :γ_q, :bic or :ebic (got :$criterion)")
+  criterion === :γ_q && (criterion = :gamma_q)       # the Unicode spelling is accepted too
+  criterion in (:gamma_q, :bic, :ebic) ||
+    throw(ArgumentError("pcss_fit: criterion must be :gamma_q, :bic or :ebic (got :$criterion)"))
 
   # selection by EBIC or BIC over a grid, each value of γ fitted independently
-  if γ === nothing && criterion !== :γ_q
+  if γ === nothing && criterion !== :gamma_q
     sel = _ic_select(n, p, ρ, sd; criterion=criterion, γ_ebic=γ_ebic,
       q=q, m̄=m̄, d̄=d̄, nreps=nreps, rng=rng,
       n_path=n_path, γ_grid=γ_grid, K=K, span=span, γ0=γ0, diag_cmp=diag_cmp)
@@ -671,16 +803,20 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, criterion::Symb
   return (lambda=λ, R=R, eta=η, gamma=γend)
 end
 
-# ---------------------------------------------------------------------
-# EBIC of a fit on the correlation scale, as in the paper,
-#     EBIC = −n[log det Ω − tr(ρ Ω)] + k log n + 4 γ_ebic k log p,
-# with Ω = Λ(I − R)Λ and k the number of nonzero entries of R above the diagonal.
-# With criterion = :bic the last term is dropped.  Using ρ and the standardized
-# scale instead of S_n and Λ adds the same constant for every γ, so the selected
-# γ is the same.  η enters only the prior, and does not count in k.  A
-# non-positive-definite I − R gives +Inf, so that the corresponding γ is never
-# selected.
-# ---------------------------------------------------------------------
+"""
+    ic_score(λ, R, n, ρ; criterion = :ebic, γ_ebic = 0.5)
+
+EBIC of a fit on the correlation scale, as in the paper,
+
+    EBIC = −n[log det Ω − tr(ρ Ω)] + k log n + 4 γ_ebic k log p,
+
+with `Ω = Λ(I − R)Λ` and `k` the number of nonzero entries of `R` above the
+diagonal.  With `criterion = :bic` the last term is dropped.  Using `ρ` and the
+standardized scale instead of `S_n` and `Λ` adds the same constant for every
+`γ`, so the selected `γ` is the same.  `η` enters only the prior, and does not
+count in `k`.  A non-positive-definite `I − R` gives `+Inf`, so that the
+corresponding `γ` is never selected.
+"""
 function ic_score(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   n::Int, ρ::AbstractMatrix{Float64}; criterion::Symbol=:ebic, γ_ebic::Float64=0.5)
   p = length(λ)
@@ -696,15 +832,19 @@ function ic_score(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   return ic
 end
 
-# ---------------------------------------------------------------------
-# Selection of γ by EBIC or BIC over a grid (the :ebic and :bic criteria of
-# pcss_fit).  Each value of the grid is fitted independently, with its own
-# continuation path started from the diagonal estimate, so that its estimate
-# does not depend on those at the other values.  The default grid has K values,
-# log-spaced from γ_q/span to γ_q·span.  The diagonal estimate is also a
-# candidate, returned with gamma = Inf if its criterion is the smallest.
-# Returns (lambda, R, eta, gamma, ic, grid, ics), with lambda on the data scale.
-# ---------------------------------------------------------------------
+"""
+    _ic_select(n, p, ρ, sd; criterion, γ_ebic, q, m̄, d̄, nreps, rng, n_path,
+               γ_grid, K, span, γ0, diag_cmp)
+
+Selection of `γ` by EBIC or BIC over a grid (the `:ebic` and `:bic` criteria of
+`pcss_fit`).  Each value of the grid is fitted independently, with its own
+continuation path started from the diagonal estimate, so that its estimate does
+not depend on those at the other values.  The default grid has `K` values,
+log-spaced from `γ_q/span` to `γ_q * span`.  The diagonal estimate is also a
+candidate, returned with `gamma = Inf` if its criterion is the smallest.
+Returns `(lambda, R, eta, gamma, ic, grid, ics)`, with `lambda` on the data
+scale.
+"""
 function _ic_select(n::Int, p::Int, ρ::AbstractMatrix{Float64}, sd::Vector{Float64};
   criterion::Symbol, γ_ebic::Float64, q::Float64, m̄::Int, d̄::Int, nreps::Int,
   rng::AbstractRNG, n_path::Int, γ_grid, K::Int, span::Float64, γ0, diag_cmp::Bool)

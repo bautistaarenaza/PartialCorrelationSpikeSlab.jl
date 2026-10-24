@@ -17,8 +17,9 @@ output of the procedure of the paper: ECM fits of the log-posterior
 along a continuation path in `γ`, followed by a comparison with the diagonal
 estimate.
 
-The exported functions are `pcss_fit`, which computes the estimate, and `γ_q`
-(ASCII alias `gamma_q`), which computes the calibrated hyperparameter.
+The exported functions are `pcss_fit`, which computes the estimate,
+`pcss_edges`, which returns the edges of the estimated graph, and `γ_q` (ASCII
+alias `gamma_q`), which computes the calibrated hyperparameter.
 
 # Notation (as in the paper)
 
@@ -49,7 +50,7 @@ using Random: AbstractRNG, default_rng, randexp
 using StatsFuns: tdistinvcdf
 using FastLapackInterface: HermitianEigenWs
 
-export pcss_fit, γ_q, gamma_q
+export pcss_fit, pcss_edges, γ_q, gamma_q
 
 """
     slab_membership!(σ, R, η, γ)
@@ -682,6 +683,7 @@ PCSS estimate of the scales `lambda` (the diagonal of Λ), the partial correlati
 matrix `R` and the mixture weight `eta`, from the `n × p` data matrix `X` or from
 the sample size `n` and the `p × p` sample covariance `S`.  Returns
 `(lambda, R, eta, gamma)`, and throws an `ArgumentError` on a usage error.
+The edges of the estimated graph are `pcss_edges(fit)`.
 
 The hyperparameter γ is `gamma` when given.  Otherwise it is set by `criterion`:
   * `:gamma_q` (default, also accepted as `:γ_q`): the calibrated value
@@ -801,6 +803,27 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
   # back to the data scale
   λ ./= sd
   return (lambda=λ, R=R, eta=η, gamma=γend)
+end
+
+"""
+    pcss_edges(fit)
+
+Edges of the graph estimated by `fit`, the output of `pcss_fit`: the pairs
+`(i, j)`, `i < j`, for which the slab is more probable than the spike,
+
+    |r_ij| > r_c(η) = (1/γ)[log γ̃ + log((1 − η)/η)],   γ̃ = γ/(1 − e^{−γ}),
+
+at the estimated `R` and `η` and at the `γ` of the fit.  Returns a vector of
+pairs `(i, j)` in lexicographic order, which is empty for the diagonal estimate
+(`eta = 0`).  `fit` can be any object with fields `R`, `eta` and `gamma`, such
+as the named tuple `(R = R, eta = eta, gamma = gamma)`.
+"""
+function pcss_edges(fit)
+  R, η, γ = fit.R, fit.eta, fit.gamma
+  η > 0 || return Tuple{Int,Int}[]               # diagonal estimate: r_c = ∞
+  r_c = (log(γ / -expm1(-γ)) + log((1 - η) / η)) / γ
+  p = size(R, 1)
+  return [(i, j) for i in 1:p for j in i+1:p if abs(R[i, j]) > r_c]
 end
 
 """

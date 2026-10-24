@@ -49,4 +49,17 @@ using PCSS, Test, Random, LinearAlgebra, Statistics
     @test_throws ArgumentError pcss_fit(; X = X, γ = γ, gamma = γ)
     @test_throws ArgumentError pcss_fit(; X = X, Ω0 = Ω0, Omega0 = Ω0)
   end
+  @testset "pcss_edges" begin
+    n, p = 400, 20
+    Ω = Matrix(SymTridiagonal(ones(p), fill(-0.4, p - 1)))
+    X = randn(Xoshiro(1), n, p) / cholesky(Ω).U'
+    fit = pcss_fit(; X = X, rng = Xoshiro(0))
+    e = pcss_edges(fit)
+    @test e == [(i, i + 1) for i in 1:p-1]                # recovers the chain
+    gt = fit.gamma / -expm1(-fit.gamma)
+    r_c = (log(gt) + log((1 - fit.eta) / fit.eta)) / fit.gamma
+    @test e == [(i, j) for i in 1:p for j in i+1:p if abs(fit.R[i, j]) > r_c]
+    @test pcss_edges((R = fit.R, eta = fit.eta, gamma = fit.gamma)) == e
+    @test isempty(pcss_edges((R = zeros(3, 3), eta = 0.0, gamma = Inf)))   # diagonal estimate
+  end
 end

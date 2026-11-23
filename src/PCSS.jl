@@ -57,15 +57,19 @@ export pcss_fit, pcss_edges, γ_q, gamma_q
 
 E-step: the slab-membership probabilities
 
-    σ_ij = η / (η + (1−η) γ̃ e^{−γ|r_ij|}) = 1 / (1 + (1−η)/η · γ̃ e^{−γ|r_ij|}),
+    σ_ij = η / (η + (1−η) γ̃ e^{−γ|r_ij|}) = 1 / (1 + e^{−γ(|r_ij| − r_c(η))}),
+    r_c(η) = [log γ̃ + log(1−η) − log η] / γ,
 
-written into `σ` in place, with the diagonal set to 1.  Requires `η > 0`.
+written into `σ` in place, with the diagonal set to 1.  Valid for every
+`η ∈ [0, 1]`: `r_c = +Inf` at `η = 0` gives `σ = 0`, and `r_c = −Inf` at `η = 1`
+gives `σ = 1`.  The form through `r_c` never multiplies `Inf` by an underflowed
+`e^{−γ|r_ij|} = 0`, which would give `NaN`.
 """
 function slab_membership!(σ::Matrix{Float64}, R::AbstractMatrix{Float64},
   η::Float64, γ::Float64)
   γ̃ = γ / (1 - exp(-γ))
-  odds = (1 - η) / η * γ̃
-  @inbounds @. σ = 1 / (1 + odds * exp(-γ * abs(R)))
+  rc = (log(γ̃) + log1p(-η) - log(η)) / γ
+  @inbounds @. σ = 1 / (1 + exp(-γ * (abs(R) - rc)))
   @inbounds for i in axes(σ, 1)
     σ[i, i] = 1.0
   end
@@ -109,7 +113,10 @@ on the correlation scale,
     (1 − 1/n) Σ_i log λ_i + ½[log det(I−R) − λ'(ρ∘(I−R))λ] − (1/n) Σ_{i<j} pen(r_ij, η).
 
 It is `-Inf` when `I − R` is not positive definite.  Used in the stopping rule
-of the ECM algorithm and in the comparison with the diagonal estimate.
+of the ECM algorithm and in the comparison with the diagonal estimate.  Each
+`−pen(r_ij, η) = log(e^a + e^b)`, with `a = log η` and
+`b = log(1−η) + log γ̃ − γ|r_ij|`, is computed as `max(a, b) + log1p(e^{−|a−b|})`,
+which stays finite for every `η ∈ [0, 1]` even when `e^{−γ|r_ij|}` underflows.
 """
 function log_posterior(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   η::Float64, n::Int, ρ::AbstractMatrix{Float64}, γ::Float64)
@@ -117,9 +124,12 @@ function log_posterior(λ::Vector{Float64}, R::AbstractMatrix{Float64},
   ld, quad = logdet_and_quad(λ, R, ρ)
   smooth = (1 - 1 / n) * sum(log, λ) + 0.5 * (ld - quad)
   γ̃ = γ / (1 - exp(-γ))
+  a = log(η)                                             # −Inf at η = 0
+  b0 = log1p(-η) + log(γ̃)                                # −Inf at η = 1
   minus_pen = 0.0                                        # −Σ_{i<j} pen(r_ij, η)
   @inbounds for j in 2:p, i in 1:j-1
-    minus_pen += log(η + (1 - η) * γ̃ * exp(-γ * abs(R[i, j])))
+    b = b0 - γ * abs(R[i, j])
+    minus_pen += max(a, b) + log1p(exp(-abs(a - b)))     # log(e^a + e^b)
   end
   return smooth + minus_pen / n
 end
@@ -519,7 +529,7 @@ function _kw(uname::Symbol, u, aname::Symbol, a, default)
 end
 
 """
-    γ_q(n, p; q = 0.05, m_max = 5, d_max = 2, nreps = 20_000, rng = default_rng())
+    γ_q(n, p; q = 0.05, m_max = 5, d_max = 1, nreps = 20_000, rng = default_rng())
     gamma_q(n, p; ...)
 
 Calibrated hyperparameter `γ_q(m̄, d̄)`, with `m̄ = m_max` and `d̄ = d_max`, for
@@ -581,7 +591,7 @@ function γ_q(n::Int, p::Int; q::Float64=0.05, m̄=nothing, m_max=nothing,
 
   # ASCII synonyms of the Unicode keywords
   m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
-  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 2))
+  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 1))
 
   n ≥ 3 || throw(ArgumentError("γ_q needs n ≥ 3 (F̄_n has n − 2 degrees of freedom); got n = $n"))
   p ≥ 2 || throw(ArgumentError("γ_q needs p ≥ 2; got p = $p"))
@@ -676,7 +686,7 @@ function _pcss_fit_usage()
 end
 
 """
-    pcss_fit(; X, gamma = nothing, criterion = :gamma_q, q = 0.05, m_max = 5, d_max = 2, ...)
+    pcss_fit(; X, gamma = nothing, criterion = :gamma_q, q = 0.05, m_max = 5, d_max = 1, ...)
     pcss_fit(; n, S, ...)
 
 PCSS estimate of the scales `lambda` (the diagonal of Λ), the partial correlation
@@ -695,11 +705,15 @@ The grid is `gamma_grid` when given, and otherwise has `K` values, log-spaced
 from `γ_q/span` to `γ_q * span`.
 
 The estimate is the output of the procedure of the paper: ECM fits along a
-continuation path of `n_path` values of γ, log-spaced from `gamma0` (√n by
-default) to the target γ, followed, if `diag_cmp`, by a comparison with the
-diagonal estimate.  If `gamma0` exceeds the target, or `n_path == 1`, the path
-is replaced by a single fit at the target.  `Omega0` replaces the diagonal
-estimate as the start of the path, on the correlation scale.
+continuation path of `n_path` values of γ, log-spaced from `gamma0`
+(`(n − 1)/√n` by default) to the target γ, followed, if `diag_cmp`, by a
+comparison with the diagonal estimate.  If `gamma0` exceeds the target, or
+`n_path == 1`, the path is replaced by a single fit at the target.  `Omega0`
+replaces the diagonal estimate as the start of the path, on the correlation
+scale, with η set to the fraction of nonzero off-diagonal entries of `Omega0`.
+A dense `Omega0` therefore gives η = 1, which leaves no weight on the spike: the
+R-update is then unpenalized at every stage, and for n < p it has no solution.
+`Omega0` should be sparse.
 
 The keywords `gamma`, `m_max`, `d_max`, `gamma_ebic`, `gamma0`, `Omega0` and
 `gamma_grid` can also be given under their Unicode names `γ`, `m̄`, `d̄`,
@@ -716,7 +730,7 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
   # ASCII synonyms of the Unicode keywords
   γ = _kw(:γ, γ, :gamma, gamma, nothing)
   m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
-  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 2))
+  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 1))
   γ_ebic = Float64(_kw(:γ_ebic, γ_ebic, :gamma_ebic, gamma_ebic, 0.5))
   γ0 = _kw(:γ0, γ0, :gamma0, gamma0, nothing)
   Ω0 = _kw(:Ω0, Ω0, :Omega0, Omega0, nothing)
@@ -755,23 +769,28 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
   end
 
   γend::Float64 = isnothing(γ) ? γ_q(n, p; q=q, m̄=m̄, d̄=d̄, nreps=nreps, rng=rng) : Float64(γ)
-  γini::Float64 = isnothing(γ0) ? sqrt(n) : Float64(γ0)
+  # Default start of the path, γ0 = (n − 1)/√n: at the diagonal estimate, R = 0
+  # satisfies the optimality condition of the first R-update for the pair (i, j)
+  # exactly when |ρ_ij| ≤ 1/√n.
+  γini::Float64 = isnothing(γ0) ? (n - 1) / sqrt(n) : Float64(γ0)
 
   # Start of the path: the diagonal estimate on the correlation scale
-  # (λ_i = √(1 − 1/n), R = 0), or the decomposition of Ω0 into scales and
-  # partial correlations.  η = 2^−20 stands in for the η = 0 of the diagonal
-  # estimate, and keeps the E-step finite.
+  # (λ_i = √(1 − 1/n), R = 0, η = 0), or the decomposition of Ω0 into scales and
+  # partial correlations, with η the fraction of nonzero off-diagonal entries of
+  # its R.  From the diagonal estimate, η = 0 is a fixed point of the ECM
+  # algorithm, so η stays 0 until it is reset below.
   if Ω0 !== nothing
     Ω = Matrix{Float64}(Ω0)
     d = sqrt.(diag(Ω))                            # λ_i = √Ω_ii
     λ = copy(d)
     R = -Ω ./ (d * d')                            # r_ij = −Ω_ij/√(Ω_ii Ω_jj)
     R[diagind(R)] .= 0.0
+    η = count(!iszero, R) / (p * (p - 1))
   else
     λ = sqrt(1 - 1 / n) .* ones(p)
     R = zeros(p, p)
+    η = 0.0
   end
-  η = 2.0^-20
 
   # one ADMM workspace, warm-started across all the stages of the path
   ws = ADMMWorkspace(I - R)
@@ -780,11 +799,11 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
 
   # Continuation path: n_path values of γ, log-spaced from γini to γend.  Before
   # each stage after the first, η is reset to the fraction of nonzero
-  # off-diagonal entries of R, since it would otherwise remain close to zero.
+  # off-diagonal entries of R, since it would otherwise remain zero.
   # Only the estimate at γend is kept.
   γpath = (n_path == 1 || γini > γend) ? [γend] : exp.(LinRange(log(γini), log(γend), n_path))
   for (i, γi) in enumerate(γpath)
-    i > 1 && (η = clamp(count(!iszero, R) / (p * (p - 1)), 2.0^-20, 1 - 2.0^-20))
+    i > 1 && (η = count(!iszero, R) / (p * (p - 1)))
     λ, R, η = ecm(λ, R, η, n, ρ, γi; ws=ws)
   end
 

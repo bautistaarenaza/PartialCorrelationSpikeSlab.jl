@@ -16,6 +16,8 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # A failure on the Julia prerelease does not mark the run as failed.
+    continue-on-error: ${{ matrix.version == 'pre' }}
     permissions: # needed to allow julia-actions/cache to proactively delete old caches that it has created
       actions: write
       contents: read
@@ -23,9 +25,9 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1.10'
-          - '1.13'
-          - 'pre'
+          - '1.10'   # oldest version allowed by [compat]
+          - '1'      # latest stable release
+          - 'pre'    # latest prerelease
         os:
           - ubuntu-latest
         arch:

@@ -1,6 +1,6 @@
-using PCSS, Test, Random, LinearAlgebra, Statistics
+using PartialCorrelationSpikeSlab, Test, Random, LinearAlgebra, Statistics
 
-@testset "PCSS" begin
+@testset "PartialCorrelationSpikeSlab" begin
   @testset "γ_q" begin
     g1 = γ_q(64, 32; nreps = 2_000, rng = Xoshiro(0))
     @test g1 == γ_q(64, 32; nreps = 2_000, rng = Xoshiro(0))
@@ -10,6 +10,10 @@ using PCSS, Test, Random, LinearAlgebra, Statistics
     g2 = γ_q(64, 32; m̄ = 4, d̄ = 3, nreps = 2_000, rng = Xoshiro(0))
     @test g2 == γ_q(64, 32; m_max = 4, d_max = 3, nreps = 2_000, rng = Xoshiro(0))
     @test_throws ArgumentError γ_q(64, 32; m̄ = 4, m_max = 4)
+    # default m_max = min(5, p − 1)
+    @test γ_q(64, 4; nreps = 500, rng = Xoshiro(0)) == γ_q(64, 4; m_max = 3, nreps = 500, rng = Xoshiro(0))
+    @test_throws ArgumentError γ_q(64, 4; m_max = 5)
+    @test_throws ArgumentError γ_q(64, 32; nreps = 0)
   end
   @testset "pcss_fit" begin
     n, p = 400, 10
@@ -29,6 +33,36 @@ using PCSS, Test, Random, LinearAlgebra, Statistics
     d = pcss_fit(; X = X, criterion = :γ_q, nreps = 2_000, rng = Xoshiro(0))
     @test c.gamma == d.gamma == γ
     @test c.R == d.R
+  end
+  @testset "input checks" begin
+    n, p = 50, 6
+    X = randn(Xoshiro(3), n, p)
+    S = cov(X; corrected = false)
+    γ = 10.0
+    Xc = copy(X); Xc[:, 2] .= 1.0                            # constant column
+    @test_throws ArgumentError pcss_fit(; X = Xc, γ = γ)
+    Xn = copy(X); Xn[3, 4] = NaN
+    @test_throws ArgumentError pcss_fit(; X = Xn, γ = γ)
+    Xm = Matrix{Union{Missing,Float64}}(X); Xm[1, 1] = missing
+    @test_throws ArgumentError pcss_fit(; X = Xm, γ = γ)
+    @test_throws ArgumentError pcss_fit(; X = X[:, 1:1], γ = γ)
+    @test_throws ArgumentError pcss_fit(; X = X[1:1, :], γ = γ)
+    Sa = copy(S); Sa[1, 2] += 1                              # not symmetric
+    @test_throws ArgumentError pcss_fit(; n = n, S = Sa, γ = γ)
+    Sd = copy(S); Sd[2, 2] = 0                               # zero variance
+    @test_throws ArgumentError pcss_fit(; n = n, S = Sd, γ = γ)
+    Sp = [1.0 0.9 0.9; 0.9 1.0 -0.9; 0.9 -0.9 1.0]           # not positive semidefinite
+    @test_throws ArgumentError pcss_fit(; n = n, S = Sp, γ = γ)
+    @test_throws ArgumentError pcss_fit(; X = X, γ = -1.0)
+    @test_throws ArgumentError pcss_fit(; X = X, γ = γ, γ0 = 0.0)
+    @test_throws ArgumentError pcss_fit(; X = X, γ = γ, n_path = 0)
+    @test_throws ArgumentError pcss_fit(; X = X, γ = γ, Ω0 = ones(p, p))
+    @test_throws ArgumentError pcss_fit(; X = X, γ = γ, Ω0 = Matrix(1.0I, p + 1, p + 1))
+    @test_throws ArgumentError pcss_fit(; X = X, criterion = :ebic, γ_grid = Float64[])
+    # default m_max = min(5, p − 1) for small p
+    X4 = randn(Xoshiro(4), 100, 4)
+    fit = pcss_fit(; X = X4, nreps = 500, rng = Xoshiro(0))
+    @test fit.gamma == γ_q(100, 4; m_max = 3, nreps = 500, rng = Xoshiro(0))
   end
   @testset "ASCII keyword synonyms" begin
     n, p = 200, 8

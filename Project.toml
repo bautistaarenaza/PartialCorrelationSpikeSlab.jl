@@ -1,6 +1,6 @@
-name = "PCSS"
+name = "PartialCorrelationSpikeSlab"
 uuid = "fe9a421e-79b4-47eb-be53-c83d1ee52e49"
-version = "0.1.0-DEV"
+version = "0.1.0"
 authors = ["Bautista Arenaza"]
 
 [deps]
@@ -16,6 +16,7 @@ LinearAlgebra = "1"
 Random = "1"
 Statistics = "1"
 StatsFuns = "2"
+Test = "1"
 julia = "1.10"
 
 [extras]

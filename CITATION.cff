@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "PartialCorrelationSpikeSlab.jl"
+abstract: >-
+  Julia implementation of the partial correlation spike-and-slab (PCSS)
+  estimator of a sparse Gaussian graphical model. The estimator places a
+  spike-and-slab prior with a uniform slab on the partial correlations, and
+  computes a maximum a posteriori estimate by an ECM algorithm along a
+  continuation path in its single hyperparameter, which can be set to a
+  calibrated value that depends only on the sample size and the number of
+  variables.
+authors:
+  - given-names: Bautista
+    family-names: Arenaza
+    affiliation: "CONICET, Centro Atómico Bariloche and Instituto Balseiro, Argentina"
+    orcid: "https://orcid.org/0009-0002-6354-725X"
+repository-code: "https://github.com/bautistaarenaza/PartialCorrelationSpikeSlab.jl"
+license: MIT
+keywords:
+  - Julia
+  - Gaussian graphical model
+  - partial correlation
+  - spike-and-slab prior
+  - sparse precision matrix

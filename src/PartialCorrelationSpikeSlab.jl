@@ -1,5 +1,5 @@
 """
-    PCSS
+    PartialCorrelationSpikeSlab
 
 Partial correlation spike-and-slab (PCSS) estimator of a sparse Gaussian
 graphical model.
@@ -41,7 +41,7 @@ replaced by `ρ_n` and `Λ` by the standardized scale `D_s Λ`, where
 `D_s = diag(√(S_n)_ii)`.  By scale invariance this changes neither `R` nor `η`,
 and the scales are returned to the data scale at the end.
 """
-module PCSS
+module PartialCorrelationSpikeSlab
 
 using LinearAlgebra
 using LinearAlgebra.LAPACK: syevr!
@@ -529,15 +529,16 @@ function _kw(uname::Symbol, u, aname::Symbol, a, default)
 end
 
 """
-    γ_q(n, p; q = 0.05, m_max = 5, d_max = 1, nreps = 20_000, rng = default_rng())
+    γ_q(n, p; q = 0.05, m_max = min(5, p − 1), d_max = 1, nreps = 20_000, rng = default_rng())
     gamma_q(n, p; ...)
 
 Calibrated hyperparameter `γ_q(m̄, d̄)`, with `m̄ = m_max` and `d̄ = d_max`, for
 sample size `n` and `p` variables: the `(1 − q)`-quantile, under a diagonal
 ground truth, of the limit law of the lower bound of the forest theorem,
-computed by Monte Carlo with `nreps` replicates.  `gamma_q` is an ASCII alias,
-and `m_max` and `d_max` can also be given under their Unicode names `m̄` and
-`d̄`.
+computed by Monte Carlo with `nreps` replicates.  The default `m_max` is 5, as in
+the paper, capped at `p − 1`, the largest number of edges of a forest on `p`
+vertices.  `gamma_q` is an ASCII alias, and `m_max` and `d_max` can also be given
+under their Unicode names `m̄` and `d̄`.
 
 # Extended help
 
@@ -589,15 +590,17 @@ four lookups and five multiplications.
 function γ_q(n::Int, p::Int; q::Float64=0.05, m̄=nothing, m_max=nothing,
   d̄=nothing, d_max=nothing, nreps::Int=20_000, rng::AbstractRNG=default_rng())
 
-  # ASCII synonyms of the Unicode keywords
-  m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
-  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 1))
-
   n ≥ 3 || throw(ArgumentError("γ_q needs n ≥ 3 (F̄_n has n − 2 degrees of freedom); got n = $n"))
   p ≥ 2 || throw(ArgumentError("γ_q needs p ≥ 2; got p = $p"))
+
+  # ASCII synonyms of the Unicode keywords
+  m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, min(5, p - 1)))
+  d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 1))
+
   0 < q < 1 || throw(ArgumentError("γ_q needs q ∈ (0, 1); got q = $q"))
   1 ≤ m̄ ≤ p - 1 || throw(ArgumentError("γ_q needs 1 ≤ m_max ≤ p − 1; got m_max = $m̄"))
   1 ≤ d̄ ≤ m̄ || throw(ArgumentError("γ_q needs 1 ≤ d_max ≤ m_max; got d_max = $d̄"))
+  nreps ≥ 1 || throw(ArgumentError("γ_q needs nreps ≥ 1; got nreps = $nreps"))
 
   tab = _forest_table_cached(m̄, d̄)
   nkeys = length(tab.τν)
@@ -686,14 +689,50 @@ function _pcss_fit_usage()
 end
 
 """
-    pcss_fit(; X, gamma = nothing, criterion = :gamma_q, q = 0.05, m_max = 5, d_max = 1, ...)
+    _list(idx)
+
+The indices `idx` as a comma-separated string, truncated after the first ten,
+for the error messages of `pcss_fit`.
+"""
+_list(idx) = join(first(idx, 10), ", ") * (length(idx) > 10 ? ", …" : "")
+
+"""
+    _check_dims(n, p)
+
+Throws an `ArgumentError` unless `n ≥ 2` and `p ≥ 2`.
+"""
+function _check_dims(n::Int, p::Int)
+  n ≥ 2 || throw(ArgumentError("pcss_fit needs n ≥ 2 observations; got n = $n"))
+  p ≥ 2 || throw(ArgumentError("pcss_fit needs p ≥ 2 variables; got p = $p"))
+  return nothing
+end
+
+"""
+    _check_positive_value(name, x)
+
+Throws an `ArgumentError` unless the keyword `name` is `nothing` or a finite
+positive number.
+"""
+function _check_positive_value(name::Symbol, x)
+  x === nothing || (x isa Real && isfinite(x) && x > 0) ||
+    throw(ArgumentError("pcss_fit needs $name to be a finite positive number; got $name = $x"))
+  return nothing
+end
+
+"""
+    pcss_fit(; X, gamma = nothing, criterion = :gamma_q, q = 0.05, m_max = min(5, p − 1), d_max = 1, ...)
     pcss_fit(; n, S, ...)
 
 PCSS estimate of the scales `lambda` (the diagonal of Λ), the partial correlation
 matrix `R` and the mixture weight `eta`, from the `n × p` data matrix `X` or from
 the sample size `n` and the `p × p` sample covariance `S`.  Returns
-`(lambda, R, eta, gamma)`, and throws an `ArgumentError` on a usage error.
-The edges of the estimated graph are `pcss_edges(fit)`.
+`(lambda, R, eta, gamma)`.  The edges of the estimated graph are
+`pcss_edges(fit)`.
+
+`X` must have finite entries, no missing values and no constant column.  `S`
+must be finite, symmetric and positive semidefinite, with a positive diagonal.
+Both need `n ≥ 2` and `p ≥ 2`.  A usage error or an invalid input throws an
+`ArgumentError`.
 
 The hyperparameter γ is `gamma` when given.  Otherwise it is set by `criterion`:
   * `:gamma_q` (default, also accepted as `:γ_q`): the calibrated value
@@ -708,9 +747,10 @@ The estimate is the output of the procedure of the paper: ECM fits along a
 continuation path of `n_path` values of γ, log-spaced from `gamma0`
 (`(n − 1)/√n` by default) to the target γ, followed, if `diag_cmp`, by a
 comparison with the diagonal estimate.  If `gamma0` exceeds the target, or
-`n_path == 1`, the path is replaced by a single fit at the target.  `Omega0`
-replaces the diagonal estimate as the start of the path, on the correlation
-scale, with η set to the fraction of nonzero off-diagonal entries of `Omega0`.
+`n_path == 1`, the path is replaced by a single fit at the target.  `Omega0`, a
+symmetric positive definite `p × p` matrix, replaces the diagonal estimate as the
+start of the path, on the correlation scale, with η set to the fraction of
+nonzero off-diagonal entries of `Omega0`.
 A dense `Omega0` therefore gives η = 1, which leaves no weight on the spike: the
 R-update is then unpenalized at every stage, and for n < p it has no solution.
 `Omega0` should be sparse.
@@ -729,7 +769,7 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
 
   # ASCII synonyms of the Unicode keywords
   γ = _kw(:γ, γ, :gamma, gamma, nothing)
-  m̄ = Int(_kw(:m̄, m̄, :m_max, m_max, 5))
+  m̄ = _kw(:m̄, m̄, :m_max, m_max, nothing)         # default min(5, p − 1), set below
   d̄ = Int(_kw(:d̄, d̄, :d_max, d_max, 1))
   γ_ebic = Float64(_kw(:γ_ebic, γ_ebic, :gamma_ebic, gamma_ebic, 0.5))
   γ0 = _kw(:γ0, γ0, :gamma0, gamma0, nothing)
@@ -739,29 +779,58 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
   # n, p, the sample correlation matrix ρ and the sample standard deviations sd,
   # from X, or from (n, S); X takes precedence.  ρ is stored as a plain symmetric
   # Matrix, and sd_i = √(S_n)_ii returns λ to the data scale at the end.
-  if X isa AbstractMatrix
+  if X !== nothing
+    X isa AbstractMatrix{<:Real} ||
+      throw(ArgumentError("pcss_fit needs X to be a real matrix, without missing values"))
     n, p = size(X)
+    _check_dims(n, p)
+    all(isfinite, X) || throw(ArgumentError("pcss_fit: X has NaN or infinite entries"))
+    constant = [j for j in 1:p if all(==(X[1, j]), view(X, :, j))]
+    isempty(constant) || throw(ArgumentError("pcss_fit: X has constant columns: $(_list(constant))"))
     ρ = Matrix(Symmetric(cor(X)))
     sd = std.(eachcol(X), corrected=false)
-  elseif n isa Integer && n ≥ 1 && S isa AbstractMatrix && size(S, 1) == size(S, 2)
+  elseif n !== nothing && S !== nothing
+    (n isa Integer && S isa AbstractMatrix{<:Real} && size(S, 1) == size(S, 2)) ||
+      _pcss_fit_usage()
     n = Int(n)
     p = size(S, 1)
+    _check_dims(n, p)
+    all(isfinite, S) || throw(ArgumentError("pcss_fit: S has NaN or infinite entries"))
+    S ≈ S' || throw(ArgumentError("pcss_fit: S is not symmetric"))
+    nonpositive = findall(≤(0), diag(S))
+    isempty(nonpositive) ||
+      throw(ArgumentError("pcss_fit: S has nonpositive diagonal entries: $(_list(nonpositive))"))
     sd = sqrt.(diag(S))
     C = Matrix{Float64}(S) ./ (sd * sd')
     @inbounds for i in 1:p
       C[i, i] = 1.0                                # exact unit diagonal
     end
     ρ = Matrix(Symmetric(C))
+    eigmin(Symmetric(ρ)) ≥ -p * sqrt(eps()) ||
+      throw(ArgumentError("pcss_fit: S is not positive semidefinite"))
   else
     _pcss_fit_usage()
   end
 
+  m̄ = m̄ === nothing ? min(5, p - 1) : Int(m̄)
+
   criterion === :γ_q && (criterion = :gamma_q)       # the Unicode spelling is accepted too
   criterion in (:gamma_q, :bic, :ebic) ||
     throw(ArgumentError("pcss_fit: criterion must be :gamma_q, :bic or :ebic (got :$criterion)"))
+  _check_positive_value(:gamma, γ)
+  _check_positive_value(:gamma0, γ0)
+  n_path ≥ 1 || throw(ArgumentError("pcss_fit needs n_path ≥ 1; got n_path = $n_path"))
 
   # selection by EBIC or BIC over a grid, each value of γ fitted independently
   if γ === nothing && criterion !== :gamma_q
+    γ_ebic ≥ 0 || throw(ArgumentError("pcss_fit needs gamma_ebic ≥ 0; got gamma_ebic = $γ_ebic"))
+    if γ_grid !== nothing
+      (!isempty(γ_grid) && all(g -> g isa Real && isfinite(g) && g > 0, γ_grid)) ||
+        throw(ArgumentError("pcss_fit needs gamma_grid to be a nonempty collection of finite positive numbers"))
+    else
+      K ≥ 1 || throw(ArgumentError("pcss_fit needs K ≥ 1; got K = $K"))
+      span ≥ 1 || throw(ArgumentError("pcss_fit needs span ≥ 1; got span = $span"))
+    end
     sel = _ic_select(n, p, ρ, sd; criterion=criterion, γ_ebic=γ_ebic,
       q=q, m̄=m̄, d̄=d̄, nreps=nreps, rng=rng,
       n_path=n_path, γ_grid=γ_grid, K=K, span=span, γ0=γ0, diag_cmp=diag_cmp)
@@ -780,8 +849,12 @@ function pcss_fit(; X=nothing, n=nothing, S=nothing, γ=nothing, gamma=nothing,
   # its R.  From the diagonal estimate, η = 0 is a fixed point of the ECM
   # algorithm, so η stays 0 until it is reset below.
   if Ω0 !== nothing
+    (Ω0 isa AbstractMatrix{<:Real} && size(Ω0) == (p, p)) ||
+      throw(ArgumentError("pcss_fit needs Omega0 to be a real $p × $p matrix"))
     Ω = Matrix{Float64}(Ω0)
-    d = sqrt.(diag(Ω))                            # λ_i = √Ω_ii
+    (all(isfinite, Ω) && Ω ≈ Ω' && isposdef(Symmetric(Ω))) ||
+      throw(ArgumentError("pcss_fit needs Omega0 to be symmetric positive definite"))
+    d = sqrt.(diag(Ω))                         # λ_i = √Ω_ii
     λ = copy(d)
     R = -Ω ./ (d * d')                            # r_ij = −Ω_ij/√(Ω_ii Ω_jj)
     R[diagind(R)] .= 0.0

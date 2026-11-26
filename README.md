@@ -1,8 +1,8 @@
-# PCSS.jl
+# PartialCorrelationSpikeSlab.jl
 
-[![Build Status](https://github.com/bautistaarenaza/PCSS.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/bautistaarenaza/PCSS.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Build Status](https://github.com/bautistaarenaza/PartialCorrelationSpikeSlab.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/bautistaarenaza/PartialCorrelationSpikeSlab.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
-PCSS (partial correlation spike-and-slab) estimates a sparse Gaussian graphical model, the graph whose edges are the nonzero partial correlations between the variables.
+PartialCorrelationSpikeSlab.jl implements the partial correlation spike-and-slab (PCSS) estimator of a sparse Gaussian graphical model, the graph whose edges are the nonzero partial correlations between the variables.
 
 The model writes the precision matrix as $\Omega = \Lambda(I - R)\Lambda$, with $\Lambda$ the diagonal matrix of scales and $R$ the matrix of partial correlations.
 Each partial correlation gets a spike-and-slab prior: a Laplace spike of inverse width $\gamma$, truncated to $(-1, 1)$, and a uniform slab, mixed with weight $\eta$.
@@ -13,17 +13,19 @@ It can be set to a calibrated value $\gamma_q$, which needs a single fit, or sel
 
 ## Installation
 
-PCSS requires Julia 1.10 or later.
+The package requires Julia 1.10 or later.
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/bautistaarenaza/PCSS.jl")
+Pkg.add("PartialCorrelationSpikeSlab")
 ```
+
+The development version can be installed with `Pkg.add(url = "https://github.com/bautistaarenaza/PartialCorrelationSpikeSlab.jl")`.
 
 ## Usage
 
 ```julia
-using PCSS, LinearAlgebra, Random
+using PartialCorrelationSpikeSlab, LinearAlgebra, Random
 
 # A chain graph on p = 20 variables, with partial correlations 0.4
 p, n = 20, 400
@@ -53,6 +55,7 @@ Omega_hat = Diagonal(fit.lambda) * (I - fit.R) * Diagonal(fit.lambda)
 Instead of the data matrix, `pcss_fit` also accepts the sample size and the sample covariance, `pcss_fit(n = n, S = S)`.
 `S` should have divisor `n`, as `cov(X; corrected = false)`.
 A divisor `n − 1` leaves `R` and `eta` unchanged and rescales `lambda` by $\sqrt{(n-1)/n}$.
+`pcss_fit` throws an `ArgumentError` on missing, NaN or infinite entries, on a constant column of `X`, and on an `S` that is not symmetric positive semidefinite with a positive diagonal.
 
 ### Estimated graph
 
@@ -78,7 +81,7 @@ The keyword `criterion` sets $\gamma$.
 
 * `criterion = :gamma_q` (default) uses the calibrated value `gamma_q(n, p; q, m_max, d_max)`.
   It is the $(1 - q)$-quantile, under a ground truth with no edges, of the limiting distribution of a lower bound on $\gamma$ above which the diagonal estimate is a strict local maximum that beats every estimate supported on a forest with at most `m_max` edges and maximum degree at most `d_max`.
-  The defaults are `q = 0.05`, `m_max = 5` and `d_max = 2`.
+  The defaults are `q = 0.05`, `m_max = 5` (or `p − 1` if smaller) and `d_max = 1`.
 * `criterion = :ebic` selects $\gamma$ by the EBIC, with parameter `gamma_ebic = 0.5`, over a grid of `K = 25` values log-spaced from $\gamma_q/8$ to $8\gamma_q$, or over `gamma_grid` when given.
   Each value of the grid needs its own fit.
 * `criterion = :bic` selects $\gamma$ by the BIC over the same grid.
